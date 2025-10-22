@@ -1,22 +1,46 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ChatMessage } from '@/components/ChatMessage';
 import { ChatInput } from '@/components/ChatInput';
 import { FloorPlanViewer } from '@/components/FloorPlanViewer';
+import { FloorPlan3DViewer } from '@/components/FloorPlan3DViewer';
 import { VastuScoreCard } from '@/components/VastuScoreCard';
 import { ExportPanel } from '@/components/ExportPanel';
+import { RoomAdjustmentPanel, Room } from '@/components/RoomAdjustmentPanel';
 import { LLMSettings, LLMConfig } from '@/components/LLMSettings';
 import { useLocalLLM, Message } from '@/hooks/useLocalLLM';
 import { useServerLLM } from '@/hooks/useServerLLM';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Trash2 } from 'lucide-react';
+import { getVastuContextPrompt } from '@/data/vastuRules';
+import { FloorPlanData } from '@/utils/exportUtils';
 
-const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant. Help users design floor plans that comply with Vastu Shastra principles. Provide guidance on room placement, entrance directions, and spatial arrangements. Keep responses concise and practical.`;
+const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant specialized in Indian architectural design.
+
+${getVastuContextPrompt()}
+
+Help users design floor plans that comply with Vastu Shastra principles. Provide guidance on:
+- Room placement and orientation
+- Entrance directions and positioning
+- Spatial arrangements and dimensions
+- Irregular plot shapes (L-shaped, T-shaped, etc.)
+- Landscape zones (gardens, lawns, parking)
+
+When users request designs:
+1. Analyze plot shape and orientation
+2. Apply Vastu rules based on priority
+3. Suggest room layouts with specific dimensions
+4. Include landscape zones when requested
+5. Explain which Vastu rules are being followed and why
+
+Keep responses concise but thorough. Always reference specific Vastu rules by their ID (e.g., V001, V004).`;
 
 const Index = () => {
   const [messages, setMessages] = useLocalStorage<Message[]>('vastu-chat-messages', []);
   const [currentResponse, setCurrentResponse] = useState('');
+  const [rooms, setRooms] = useLocalStorage<Room[]>('vastu-rooms', []);
   const [llmConfig, setLLMConfig] = useLocalStorage<LLMConfig>('llm-config', {
     type: 'browser',
     endpoint: '',
@@ -82,6 +106,37 @@ const Index = () => {
       title: 'Chat cleared',
       description: 'All messages have been removed',
     });
+  };
+
+  const handleUpdateRoom = (roomId: string, updates: Partial<Room>) => {
+    setRooms(rooms.map(room => room.id === roomId ? { ...room, ...updates } : room));
+    toast({
+      title: 'Room updated',
+      description: 'Room properties have been modified',
+    });
+  };
+
+  const handleDeleteRoom = (roomId: string) => {
+    setRooms(rooms.filter(room => room.id !== roomId));
+    toast({
+      title: 'Room deleted',
+      description: 'Room has been removed from floor plan',
+    });
+  };
+
+  const handleAddRoom = (room: Room) => {
+    setRooms([...rooms, room]);
+    toast({
+      title: 'Room added',
+      description: 'New room has been added to floor plan',
+    });
+  };
+
+  const floorPlanData: FloorPlanData = {
+    rooms,
+    plotWidth: 30,
+    plotLength: 30,
+    plotShape: 'rectangular'
   };
 
   const handleInitialize = async () => {
@@ -217,12 +272,29 @@ const Index = () => {
       {/* Visualization Panel */}
       <div className="flex w-1/2 flex-col">
         <div className="flex-1 p-6">
-          <FloorPlanViewer />
+          <Tabs defaultValue="2d" className="h-full">
+            <TabsList className="grid w-full grid-cols-2 mb-4">
+              <TabsTrigger value="2d">2D View</TabsTrigger>
+              <TabsTrigger value="3d">3D Walkthrough</TabsTrigger>
+            </TabsList>
+            <TabsContent value="2d" className="h-[calc(100%-3rem)]">
+              <FloorPlanViewer />
+            </TabsContent>
+            <TabsContent value="3d" className="h-[calc(100%-3rem)]">
+              <FloorPlan3DViewer rooms={rooms} plotWidth={30} plotLength={30} />
+            </TabsContent>
+          </Tabs>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 border-t border-border p-6">
+        <div className="grid grid-cols-3 gap-4 border-t border-border p-6">
           <VastuScoreCard />
-          <ExportPanel hasFloorPlan={false} />
+          <ExportPanel hasFloorPlan={rooms.length > 0} floorPlanData={floorPlanData} />
+          <RoomAdjustmentPanel
+            rooms={rooms}
+            onUpdateRoom={handleUpdateRoom}
+            onDeleteRoom={handleDeleteRoom}
+            onAddRoom={handleAddRoom}
+          />
         </div>
       </div>
     </div>

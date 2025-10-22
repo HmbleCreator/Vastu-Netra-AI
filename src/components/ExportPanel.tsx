@@ -1,17 +1,19 @@
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Download, FileJson, FileText } from 'lucide-react';
+import { Download, FileJson, FileText, FileCode } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { exportAsSVG, exportAsDXF, exportAsJSON, downloadFile, FloorPlanData } from '@/utils/exportUtils';
 
 interface ExportPanelProps {
   hasFloorPlan: boolean;
+  floorPlanData?: FloorPlanData;
 }
 
-export function ExportPanel({ hasFloorPlan }: ExportPanelProps) {
+export function ExportPanel({ hasFloorPlan, floorPlanData }: ExportPanelProps) {
   const { toast } = useToast();
 
   const handleExport = (format: string) => {
-    if (!hasFloorPlan) {
+    if (!hasFloorPlan || !floorPlanData) {
       toast({
         title: 'No floor plan',
         description: 'Generate a floor plan first to export',
@@ -20,12 +22,44 @@ export function ExportPanel({ hasFloorPlan }: ExportPanelProps) {
       return;
     }
 
-    toast({
-      title: 'Export started',
-      description: `Exporting floor plan as ${format.toUpperCase()}...`,
-    });
+    try {
+      let content: string;
+      let filename: string;
+      let mimeType: string;
 
-    // TODO: Implement actual export logic
+      switch (format) {
+        case 'svg':
+          content = exportAsSVG(floorPlanData);
+          filename = 'floor-plan.svg';
+          mimeType = 'image/svg+xml';
+          break;
+        case 'dxf':
+          content = exportAsDXF(floorPlanData);
+          filename = 'floor-plan.dxf';
+          mimeType = 'application/dxf';
+          break;
+        case 'json':
+          content = exportAsJSON(floorPlanData);
+          filename = 'floor-plan.json';
+          mimeType = 'application/json';
+          break;
+        default:
+          throw new Error('Unsupported format');
+      }
+
+      downloadFile(content, filename, mimeType);
+
+      toast({
+        title: 'Export successful',
+        description: `Floor plan exported as ${format.toUpperCase()}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Export failed',
+        description: 'Could not export floor plan',
+        variant: 'destructive',
+      });
+    }
   };
 
   return (
@@ -44,11 +78,11 @@ export function ExportPanel({ hasFloorPlan }: ExportPanelProps) {
         <Button
           variant="outline"
           className="w-full justify-start"
-          onClick={() => handleExport('pdf')}
+          onClick={() => handleExport('dxf')}
           disabled={!hasFloorPlan}
         >
-          <FileText className="mr-2 h-4 w-4" />
-          Export as PDF
+          <FileCode className="mr-2 h-4 w-4" />
+          Export as DXF (CAD)
         </Button>
         <Button
           variant="outline"
