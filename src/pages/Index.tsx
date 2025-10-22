@@ -5,7 +5,9 @@ import { ChatInput } from '@/components/ChatInput';
 import { FloorPlanViewer } from '@/components/FloorPlanViewer';
 import { VastuScoreCard } from '@/components/VastuScoreCard';
 import { ExportPanel } from '@/components/ExportPanel';
+import { LLMSettings, LLMConfig } from '@/components/LLMSettings';
 import { useLocalLLM, Message } from '@/hooks/useLocalLLM';
+import { useServerLLM } from '@/hooks/useServerLLM';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Trash2 } from 'lucide-react';
@@ -15,7 +17,20 @@ const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant. Help use
 const Index = () => {
   const [messages, setMessages] = useLocalStorage<Message[]>('vastu-chat-messages', []);
   const [currentResponse, setCurrentResponse] = useState('');
-  const { generateResponse, initializeModel, isLoading, isInitializing, error, isReady } = useLocalLLM();
+  const [llmConfig, setLLMConfig] = useLocalStorage<LLMConfig>('llm-config', {
+    type: 'browser',
+    endpoint: '',
+    model: '',
+  });
+  
+  const browserLLM = useLocalLLM();
+  const serverLLM = useServerLLM({
+    endpoint: llmConfig.endpoint,
+    model: llmConfig.model,
+  });
+  
+  const activeLLM = llmConfig.type === 'browser' ? browserLLM : serverLLM;
+  const { generateResponse, initializeModel, isLoading, isInitializing, error, isReady } = activeLLM;
   const { toast } = useToast();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -94,20 +109,23 @@ const Index = () => {
             <div>
               <h1 className="text-2xl font-bold">Vastu Architect AI</h1>
               <p className="text-sm text-muted-foreground">
-                {isReady ? 'Model ready' : isInitializing ? 'Loading model...' : 'Click to initialize'}
+                {isReady ? `${llmConfig.type === 'browser' ? 'Browser' : llmConfig.type.toUpperCase()} ready` : isInitializing ? 'Loading model...' : 'Configure LLM to start'}
               </p>
             </div>
-            {messages.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleClearChat}
-                disabled={isLoading}
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Clear
-              </Button>
-            )}
+            <div className="flex gap-2">
+              <LLMSettings config={llmConfig} onConfigChange={setLLMConfig} />
+              {messages.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleClearChat}
+                  disabled={isLoading}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Clear
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -116,10 +134,12 @@ const Index = () => {
             <div className="text-center">
               <h2 className="mb-4 text-xl font-semibold">Welcome to Vastu Architect AI</h2>
               <p className="mb-6 text-muted-foreground">
-                Initialize the local AI model to start designing Vastu-compliant floor plans
+                {llmConfig.type === 'browser' 
+                  ? 'Initialize the browser-based AI model to start'
+                  : 'Make sure your local LLM server is running and click below to start'}
               </p>
               <Button onClick={handleInitialize} size="lg">
-                Initialize AI Model
+                {llmConfig.type === 'browser' ? 'Initialize AI Model' : 'Connect to Server'}
               </Button>
               {error && (
                 <p className="mt-4 text-sm text-destructive">{error}</p>
