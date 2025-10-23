@@ -14,6 +14,8 @@ export interface Room {
   width: number;
   height: number;
   type: string;
+  direction?: string;
+  vastuScore?: number;
 }
 
 interface RoomAdjustmentPanelProps {

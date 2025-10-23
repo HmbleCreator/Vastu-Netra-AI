@@ -23,6 +23,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2, Trash2 } from 'lucide-react';
 import { getVastuContextPrompt } from '@/data/vastuRules';
 import { FloorPlanData } from '@/utils/exportUtils';
+import { extractFloorPlanData } from '@/utils/parseFloorPlan';
 
 const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant specialized in Indian architectural design.
 
@@ -35,12 +36,46 @@ Help users design floor plans that comply with Vastu Shastra principles. Provide
 - Irregular plot shapes (L-shaped, T-shaped, etc.)
 - Landscape zones (gardens, lawns, parking)
 
-When users request designs:
-1. Analyze plot shape and orientation
-2. Apply Vastu rules based on priority
-3. Suggest room layouts with specific dimensions
-4. Include landscape zones when requested
-5. Explain which Vastu rules are being followed and why
+CRITICAL: When users request floor plan designs, you MUST output structured JSON data in addition to your explanation.
+
+**Output Format:**
+1. First, provide a brief explanation of the design and Vastu principles applied
+2. Then, output a JSON code block with room data in this EXACT format:
+
+\`\`\`json
+{
+  "rooms": [
+    {
+      "id": "unique-id",
+      "name": "Room Name",
+      "type": "bedroom|kitchen|bathroom|living|dining|study|entrance|other",
+      "direction": "north|south|east|west|northeast|northwest|southeast|southwest",
+      "x": 0,
+      "y": 0,
+      "width": 10,
+      "height": 10,
+      "vastuScore": 85
+    }
+  ],
+  "plotWidth": 30,
+  "plotLength": 30,
+  "plotShape": "rectangular|square|L-shaped|T-shaped|irregular"
+}
+\`\`\`
+
+**Room Placement Guidelines:**
+- Use a coordinate system where (0,0) is the top-left corner
+- Standard plot size: 30x30 meters (adjust based on user requirements)
+- Typical room dimensions: 3-5 meters for bedrooms, 4-6 meters for living rooms, 2-3 meters for bathrooms
+- Position rooms according to Vastu directions (e.g., kitchen in southeast at approximately x:20-25, y:20-25)
+- Calculate vastuScore (0-100) based on how well the room follows Vastu principles
+
+**Example coordinates for 30x30 plot:**
+- Northeast (0-10, 0-10) - Pooja room, entrance
+- Southeast (20-30, 20-30) - Kitchen
+- Southwest (20-30, 0-10) - Master bedroom
+- Northwest (0-10, 20-30) - Guest room/bathroom
+- Center - Living room
 
 Keep responses concise but thorough. Always reference specific Vastu rules by their ID (e.g., V001, V004).`;
 
@@ -111,6 +146,16 @@ const Index = () => {
       // Add assistant message after response is complete
       addMessage(activeSessionId, assistantMessage);
       setCurrentResponse('');
+
+      // Extract and apply floor plan data if present
+      const floorPlanData = extractFloorPlanData(response);
+      if (floorPlanData && floorPlanData.rooms.length > 0) {
+        setRooms(floorPlanData.rooms);
+        toast({
+          title: 'Floor plan generated',
+          description: `Added ${floorPlanData.rooms.length} rooms to the visualization`,
+        });
+      }
     } catch (err) {
       toast({
         title: 'Error',
@@ -319,7 +364,7 @@ const Index = () => {
               <TabsTrigger value="3d">3D Walkthrough</TabsTrigger>
             </TabsList>
             <TabsContent value="2d" className="h-[calc(100%-3rem)]">
-              <FloorPlanViewer />
+              <FloorPlanViewer rooms={rooms} plotWidth={30} plotLength={30} />
             </TabsContent>
             <TabsContent value="3d" className="h-[calc(100%-3rem)]">
               <FloorPlan3DViewer rooms={rooms} plotWidth={30} plotLength={30} />
