@@ -9,9 +9,11 @@ import { VastuScoreCard } from '@/components/VastuScoreCard';
 import { ExportPanel } from '@/components/ExportPanel';
 import { RoomAdjustmentPanel, Room } from '@/components/RoomAdjustmentPanel';
 import { LLMSettings, LLMConfig } from '@/components/LLMSettings';
+import { SessionSidebar } from '@/components/SessionSidebar';
 import { useLocalLLM, Message } from '@/hooks/useLocalLLM';
 import { useServerLLM } from '@/hooks/useServerLLM';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { useChatSessions } from '@/hooks/useChatSessions';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Trash2 } from 'lucide-react';
 import { getVastuContextPrompt } from '@/data/vastuRules';
@@ -38,7 +40,17 @@ When users request designs:
 Keep responses concise but thorough. Always reference specific Vastu rules by their ID (e.g., V001, V004).`;
 
 const Index = () => {
-  const [messages, setMessages] = useLocalStorage<Message[]>('vastu-chat-messages', []);
+  const {
+    sessions,
+    activeSession,
+    activeSessionId,
+    setActiveSessionId,
+    createSession,
+    deleteSession,
+    addMessage,
+    clearSessionMessages,
+  } = useChatSessions();
+  
   const [currentResponse, setCurrentResponse] = useState('');
   const [rooms, setRooms] = useLocalStorage<Room[]>('vastu-rooms', []);
   const [llmConfig, setLLMConfig] = useLocalStorage<LLMConfig>('llm-config', {
@@ -60,22 +72,25 @@ const Index = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, currentResponse]);
+  }, [activeSession?.messages, currentResponse]);
 
   const handleSend = async (content: string) => {
+    if (!activeSession || !activeSessionId) return;
+
     const userMessage: Message = {
       role: 'user',
       content,
       timestamp: Date.now(),
     };
 
-    setMessages([...messages, userMessage]);
+    // Add user message immediately to prevent state loss
+    addMessage(activeSessionId, userMessage);
 
     try {
       const response = await generateResponse(
         [
           { role: 'system', content: SYSTEM_PROMPT, timestamp: Date.now() },
-          ...messages,
+          ...activeSession.messages,
           userMessage,
         ],
         setCurrentResponse
@@ -87,7 +102,8 @@ const Index = () => {
         timestamp: Date.now(),
       };
 
-      setMessages(prev => [...prev, assistantMessage]);
+      // Add assistant message after response is complete
+      addMessage(activeSessionId, assistantMessage);
       setCurrentResponse('');
     } catch (err) {
       toast({
@@ -100,7 +116,8 @@ const Index = () => {
   };
 
   const handleClearChat = () => {
-    setMessages([]);
+    if (!activeSessionId) return;
+    clearSessionMessages(activeSessionId);
     setCurrentResponse('');
     toast({
       title: 'Chat cleared',
@@ -157,8 +174,19 @@ const Index = () => {
 
   return (
     <div className="flex h-screen bg-background">
+      {/* Session Sidebar */}
+      <div className="w-64">
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSessionSelect={setActiveSessionId}
+          onSessionCreate={createSession}
+          onSessionDelete={deleteSession}
+        />
+      </div>
+
       {/* Chat Panel */}
-      <div className="flex w-1/2 flex-col border-r border-border">
+      <div className="flex flex-1 flex-col border-r border-border">
         <div className="border-b border-border bg-card px-6 py-4">
           <div className="flex items-center justify-between">
             <div>
@@ -169,7 +197,7 @@ const Index = () => {
             </div>
             <div className="flex gap-2">
               <LLMSettings config={llmConfig} onConfigChange={setLLMConfig} />
-              {messages.length > 0 && (
+              {activeSession && activeSession.messages.length > 0 && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -217,7 +245,7 @@ const Index = () => {
           <>
             <div className="flex-1 overflow-y-auto p-6">
               <div className="space-y-4">
-                {messages.length === 0 && (
+                {activeSession && activeSession.messages.length === 0 && (
                   <div className="text-center text-muted-foreground">
                     <p className="mb-4">Start designing your Vastu-compliant floor plan</p>
                     <div className="grid gap-2">
@@ -237,7 +265,7 @@ const Index = () => {
                   </div>
                 )}
 
-                {messages.map((message, index) => (
+                {activeSession?.messages.map((message, index) => (
                   <ChatMessage key={index} message={message} />
                 ))}
 
@@ -270,7 +298,7 @@ const Index = () => {
       </div>
 
       {/* Visualization Panel */}
-      <div className="flex w-1/2 flex-col">
+      <div className="flex flex-1 flex-col">
         <div className="flex-1 p-6">
           <Tabs defaultValue="2d" className="h-full">
             <TabsList className="grid w-full grid-cols-2 mb-4">
