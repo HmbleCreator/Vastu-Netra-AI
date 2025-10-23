@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from '@/components/ui/resizable';
 import { ChatMessage } from '@/components/ChatMessage';
 import { ChatInput } from '@/components/ChatInput';
 import { FloorPlanViewer } from '@/components/FloorPlanViewer';
@@ -52,6 +57,7 @@ const Index = () => {
   } = useChatSessions();
   
   const [currentResponse, setCurrentResponse] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage('sidebar-collapsed', false);
   const [rooms, setRooms] = useLocalStorage<Room[]>('vastu-rooms', []);
   const [llmConfig, setLLMConfig] = useLocalStorage<LLMConfig>('llm-config', {
     type: 'browser',
@@ -175,18 +181,21 @@ const Index = () => {
   return (
     <div className="flex h-screen bg-background">
       {/* Session Sidebar */}
-      <div className="w-64">
-        <SessionSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSessionSelect={setActiveSessionId}
-          onSessionCreate={createSession}
-          onSessionDelete={deleteSession}
-        />
-      </div>
+      <SessionSidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSessionSelect={setActiveSessionId}
+        onSessionCreate={createSession}
+        onSessionDelete={deleteSession}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      {/* Chat Panel */}
-      <div className="flex flex-1 flex-col border-r border-border">
+      {/* Resizable Chat and Visualization Panels */}
+      <ResizablePanelGroup direction="horizontal" className="flex-1">
+        {/* Chat Panel */}
+        <ResizablePanel defaultSize={50} minSize={30}>
+          <div className="flex h-full flex-col border-r border-border">
         <div className="border-b border-border bg-card px-6 py-4">
           <div className="flex items-center justify-between">
             <div>
@@ -295,10 +304,14 @@ const Index = () => {
             </div>
           </>
         )}
-      </div>
+          </div>
+        </ResizablePanel>
 
-      {/* Visualization Panel */}
-      <div className="flex flex-1 flex-col">
+        <ResizableHandle withHandle />
+
+        {/* Visualization Panel */}
+        <ResizablePanel defaultSize={50} minSize={30}>
+          <div className="flex h-full flex-col">
         <div className="flex-1 p-6">
           <Tabs defaultValue="2d" className="h-full">
             <TabsList className="grid w-full grid-cols-2 mb-4">
@@ -324,7 +337,9 @@ const Index = () => {
             onAddRoom={handleAddRoom}
           />
         </div>
-      </div>
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 };
