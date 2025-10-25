@@ -25,66 +25,53 @@ import { getVastuContextPrompt } from '@/data/vastuRules';
 import { FloorPlanData } from '@/utils/exportUtils';
 import { extractFloorPlanData } from '@/utils/parseFloorPlan';
 
-const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant specialized in Indian architectural design.
+const SYSTEM_PROMPT = `You are a Vastu-aware architecture AI assistant specializing in Indian residential design. Help users design floor plans that balance modern functionality with traditional Vastu Shastra principles.
 
 ${getVastuContextPrompt()}
 
-Help users design floor plans that comply with Vastu Shastra principles. Provide guidance on:
-- Room placement and orientation
-- Entrance directions and positioning
-- Spatial arrangements and dimensions
-- Irregular plot shapes (L-shaped, T-shaped, etc.)
-- Landscape zones (gardens, lawns, parking)
+**Your Capabilities:**
+1. Understand user requirements for residential layouts (BHK configurations, plot size, orientation)
+2. Apply Vastu principles to room placement and design
+3. Use the generate_layout_hybrid tool to create floor plans
+4. Explain Vastu compliance and design choices
+5. Modify layouts based on user feedback
 
-CRITICAL: When users request floor plan designs, you MUST output structured JSON data in addition to your explanation.
+**Key Vastu Principles:**
+- Kitchen: Southeast (Agni corner) or Northwest
+- Master Bedroom: Southwest (stability)
+- Living Room: North, East, or Northeast
+- Entrance: North, East, or Northeast (most auspicious)
+- Bathroom: Northwest, West, or South (never Northeast)
+- Pooja Room: Northeast (most auspicious)
 
-**Output Format:**
-1. First, provide a brief explanation of the design and Vastu principles applied
-2. Then, output a JSON code block with room data in this EXACT format:
+**When to Use generate_layout_hybrid Tool:**
+- User requests a new floor plan design
+- User asks to modify plot orientation or room placement
+- User wants to change BHK configuration
+- User requests Vastu-compliant layouts
 
-\`\`\`json
-{
-  "rooms": [
-    {
-      "id": "unique-id",
-      "name": "Room Name",
-      "type": "bedroom|kitchen|bathroom|living|dining|study|entrance|other",
-      "direction": "north|south|east|west|northeast|northwest|southeast|southwest",
-      "x": 0,
-      "y": 0,
-      "width": 10,
-      "height": 10,
-      "vastuScore": 85
-    }
-  ],
-  "plotWidth": 30,
-  "plotLength": 30,
-  "plotShape": "rectangular|square|L-shaped|T-shaped|irregular"
-}
-\`\`\`
+**Tool Usage Instructions:**
+1. Extract requirements from user query:
+   - Number of rooms (e.g., "3BHK" = kitchen, living, 3 bedrooms, 2 bathrooms)
+   - Plot dimensions (estimate ~35-45m for 3BHK if not specified)
+   - Orientation (default: "east" if not specified)
+   - Vastu constraints from user preferences
+   - Total area (estimate: 2BHK=120-150m², 3BHK=150-200m², 4BHK=200-250m²)
 
-**Room Placement Guidelines:**
-- Use a coordinate system where (0,0) is the top-left corner
-- Standard plot size: 30x30 meters (adjust based on user requirements)
-- Create REALISTIC room dimensions - rooms should NOT be perfect squares unless specifically appropriate
-  * Bedrooms: typically 3.5-4.5m x 4-5.5m (rectangular, not square)
-  * Living rooms: 4-6m x 5-7m (rectangular, elongated)
-  * Kitchen: 3-3.5m x 4-5m (rectangular)
-  * Bathrooms: 2-2.5m x 2.5-3m (slightly rectangular)
-  * Study: 3-3.5m x 3.5-4.5m (can be more square)
-- Vary room dimensions to create a natural, livable floor plan
-- Position rooms according to Vastu directions (e.g., kitchen in southeast at approximately x:20-25, y:20-25)
-- Rooms should fit together logically with shared walls where appropriate
-- Calculate vastuScore (0-100) based on how well the room follows Vastu principles
+2. Call generate_layout_hybrid with proper parameters
+3. After layout is generated, explain the design and Vastu compliance
+4. DO NOT output JSON in chat - the layout will be visualized automatically
 
-**Example coordinates for 30x30 plot:**
-- Northeast (0-10, 0-10) - Pooja room, entrance
-- Southeast (20-30, 20-30) - Kitchen
-- Southwest (20-30, 0-10) - Master bedroom
-- Northwest (0-10, 20-30) - Guest room/bathroom
-- Center - Living room
+**Example Interaction:**
+User: "Design a 3BHK house with east facing entrance"
+You: *Call generate_layout_hybrid tool*
+Then respond: "I've designed your 3BHK layout with an east-facing entrance (very auspicious in Vastu). The kitchen is positioned in the southeast (Agni corner), master bedroom in southwest for stability, and living room in the northeast for positive energy flow. The layout has a Vastu compliance score of 92%. Would you like me to adjust anything?"
 
-Keep responses concise but thorough. Always reference specific Vastu rules by their ID (e.g., V001, V004).`;
+**Important:**
+- Always use the tool for layout generation, never output raw JSON
+- Explain Vastu principles in simple, user-friendly language
+- Be ready to modify layouts based on user feedback
+- Provide Vastu scores and explain compliance`;
 
 const Index = () => {
   const {
@@ -135,13 +122,63 @@ const Index = () => {
     addMessage(activeSessionId, userMessage);
 
     try {
+      // Define tools for the LLM (only for server-based LLMs)
+      const tools = llmConfig.type !== 'browser' ? [
+        {
+          name: 'generate_layout_hybrid',
+          description: 'Generate a floor plan layout using hybrid solver (fast graph-based + reliable constraint-based with fallback). Use this tool whenever the user requests a floor plan design or modifications to room placement.',
+          parameters: {
+            type: 'object',
+            properties: {
+              rooms_needed: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'List of room names needed (e.g., ["kitchen", "living_room", "master_bedroom", "bedroom_2", "bathroom_1", "bathroom_2"])',
+              },
+              plot_dimensions: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Plot dimensions in meters as [width, height]. Typical: [35, 40] for 3BHK',
+              },
+              orientation: {
+                type: 'string',
+                enum: ['north', 'south', 'east', 'west'],
+                description: 'Main entrance orientation',
+              },
+              vastu_constraints: {
+                type: 'object',
+                description: 'Vastu constraints to enforce (e.g., {"kitchen_southeast": true, "master_bedroom_southwest": true})',
+              },
+              total_area: {
+                type: 'number',
+                description: 'Total building area in square meters (e.g., 150 for 3BHK)',
+              },
+            },
+            required: ['rooms_needed', 'plot_dimensions', 'orientation'],
+          },
+        },
+      ] : undefined;
+
       const response = await generateResponse(
         [
           { role: 'system', content: SYSTEM_PROMPT, timestamp: Date.now() },
           ...activeSession.messages,
           userMessage,
         ],
-        setCurrentResponse
+        setCurrentResponse,
+        tools,
+        (toolCall, result) => {
+          // Handle tool call results
+          console.log('Tool call result:', toolCall.function.name, result);
+          
+          if (toolCall.function.name === 'generate_layout_hybrid' && result.status === 'success') {
+            setRooms(result.rooms);
+            toast({
+              title: "Floor Plan Generated",
+              description: `Generated ${result.rooms.length} rooms using ${result.solver} solver (${result.generation_time?.toFixed(1)}s)`,
+            });
+          }
+        }
       );
 
       const assistantMessage: Message = {
@@ -154,14 +191,16 @@ const Index = () => {
       addMessage(activeSessionId, assistantMessage);
       setCurrentResponse('');
 
-      // Extract and apply floor plan data if present
-      const floorPlanData = extractFloorPlanData(response);
-      if (floorPlanData && floorPlanData.rooms.length > 0) {
-        setRooms(floorPlanData.rooms);
-        toast({
-          title: 'Floor plan generated',
-          description: `Added ${floorPlanData.rooms.length} rooms to the visualization`,
-        });
+      // Extract and apply floor plan data if present (fallback for browser LLM)
+      if (llmConfig.type === 'browser') {
+        const floorPlanData = extractFloorPlanData(response);
+        if (floorPlanData && floorPlanData.rooms.length > 0) {
+          setRooms(floorPlanData.rooms);
+          toast({
+            title: 'Floor plan generated',
+            description: `Added ${floorPlanData.rooms.length} rooms to the visualization`,
+          });
+        }
       }
     } catch (err) {
       toast({
