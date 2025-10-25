@@ -66,8 +66,15 @@ CRITICAL: When users request floor plan designs, you MUST output structured JSON
 **Room Placement Guidelines:**
 - Use a coordinate system where (0,0) is the top-left corner
 - Standard plot size: 30x30 meters (adjust based on user requirements)
-- Typical room dimensions: 3-5 meters for bedrooms, 4-6 meters for living rooms, 2-3 meters for bathrooms
+- Create REALISTIC room dimensions - rooms should NOT be perfect squares unless specifically appropriate
+  * Bedrooms: typically 3.5-4.5m x 4-5.5m (rectangular, not square)
+  * Living rooms: 4-6m x 5-7m (rectangular, elongated)
+  * Kitchen: 3-3.5m x 4-5m (rectangular)
+  * Bathrooms: 2-2.5m x 2.5-3m (slightly rectangular)
+  * Study: 3-3.5m x 3.5-4.5m (can be more square)
+- Vary room dimensions to create a natural, livable floor plan
 - Position rooms according to Vastu directions (e.g., kitchen in southeast at approximately x:20-25, y:20-25)
+- Rooms should fit together logically with shared walls where appropriate
 - Calculate vastuScore (0-100) based on how well the room follows Vastu principles
 
 **Example coordinates for 30x30 plot:**
