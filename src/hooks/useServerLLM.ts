@@ -9,6 +9,7 @@ export interface Message {
 export interface ServerLLMConfig {
   endpoint: string;
   model?: string;
+  type?: 'ollama' | 'openai' | 'llamacpp' | 'lmstudio';
 }
 
 export function useServerLLM(config: ServerLLMConfig) {
@@ -23,20 +24,32 @@ export function useServerLLM(config: ServerLLMConfig) {
     setError(null);
 
     try {
-      const response = await fetch(`${config.endpoint}/v1/chat/completions`, {
+      const isOllama = config.type === 'ollama' || config.endpoint.includes('11434');
+      const endpoint = isOllama ? `${config.endpoint}/api/chat` : `${config.endpoint}/v1/chat/completions`;
+      
+      const requestBody = isOllama ? {
+        model: config.model || 'llama3.2',
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content
+        })),
+        stream: true,
+      } : {
+        model: config.model || 'default',
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content
+        })),
+        stream: true,
+        temperature: 0.7,
+      };
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: config.model || 'default',
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.content
-          })),
-          stream: true,
-          temperature: 0.7,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -57,19 +70,35 @@ export function useServerLLM(config: ServerLLMConfig) {
         const lines = chunk.split('\n').filter(line => line.trim() !== '');
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-
+          if (isOllama) {
+            // Ollama format: each line is a complete JSON object
             try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content;
+              const parsed = JSON.parse(line);
+              const content = parsed.message?.content;
               if (content) {
                 fullResponse += content;
                 if (onToken) onToken(content);
               }
+              if (parsed.done) break;
             } catch (e) {
               // Skip invalid JSON
+            }
+          } else {
+            // OpenAI format: SSE with data: prefix
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content;
+                if (content) {
+                  fullResponse += content;
+                  if (onToken) onToken(content);
+                }
+              } catch (e) {
+                // Skip invalid JSON
+              }
             }
           }
         }

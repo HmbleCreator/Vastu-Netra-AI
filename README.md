@@ -34,6 +34,9 @@ npm i
 
 # Step 4: Start the development server with auto-reloading and an instant preview.
 npm run dev
+
+# Step 8: Open a new terminal window/tab and Start the FastAPI server with auto-reloading and an instant preview.
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Edit a file directly in GitHub**

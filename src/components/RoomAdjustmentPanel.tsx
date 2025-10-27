@@ -23,15 +23,18 @@ interface RoomAdjustmentPanelProps {
   onUpdateRoom: (roomId: string, updates: Partial<Room>) => void;
   onDeleteRoom: (roomId: string) => void;
   onAddRoom: (room: Room) => void;
+  selectedRoomId: string | null;
+  onSelectRoom: (roomId: string | null) => void;
 }
 
 export function RoomAdjustmentPanel({ 
   rooms, 
   onUpdateRoom, 
   onDeleteRoom,
-  onAddRoom 
+  onAddRoom,
+  selectedRoomId,
+  onSelectRoom
 }: RoomAdjustmentPanelProps) {
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [isAddingRoom, setIsAddingRoom] = useState(false);
   
   const selectedRoom = rooms.find(r => r.id === selectedRoomId);
@@ -48,7 +51,7 @@ export function RoomAdjustmentPanel({
     };
     onAddRoom(newRoom);
     setIsAddingRoom(false);
-    setSelectedRoomId(newRoom.id);
+    onSelectRoom(newRoom.id);
   };
 
   return (
@@ -67,7 +70,7 @@ export function RoomAdjustmentPanel({
 
       <div className="space-y-2">
         <Label>Select Room</Label>
-        <Select value={selectedRoomId || ''} onValueChange={setSelectedRoomId}>
+        <Select value={selectedRoomId || ''} onValueChange={onSelectRoom}>
           <SelectTrigger>
             <SelectValue placeholder="Choose a room to edit" />
           </SelectTrigger>
@@ -176,7 +179,7 @@ export function RoomAdjustmentPanel({
             className="w-full"
             onClick={() => {
               onDeleteRoom(selectedRoom.id);
-              setSelectedRoomId(null);
+              onSelectRoom(null);
             }}
           >
             <Trash2 className="mr-2 h-4 w-4" />

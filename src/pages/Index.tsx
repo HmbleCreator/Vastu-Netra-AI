@@ -94,6 +94,13 @@ const Index = () => {
   const [currentResponse, setCurrentResponse] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage('sidebar-collapsed', false);
   const [rooms, setRooms] = useLocalStorage<Room[]>('vastu-rooms', []);
+  const [plotWidth, setPlotWidth] = useLocalStorage<number>('vastu-plot-width', 30);
+  const [plotLength, setPlotLength] = useLocalStorage<number>('vastu-plot-length', 30);
+  const [plotShape, setPlotShape] = useLocalStorage<string>('vastu-plot-shape', 'rectangular');
+  const [plotPolygon, setPlotPolygon] = useLocalStorage<number[][] | undefined>('vastu-plot-polygon', undefined);
+  const [plotCircle, setPlotCircle] = useLocalStorage<{ center: [number, number]; radius: number } | undefined>('vastu-plot-circle', undefined);
+  const [vastuScore, setVastuScore] = useState<{ overall: number; entranceCompliance: number; roomPlacement: number; directionAlignment: number } | undefined>(undefined);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [llmConfig, setLLMConfig] = useLocalStorage<LLMConfig>('llm-config', {
     type: 'browser',
     endpoint: '',
@@ -104,6 +111,7 @@ const Index = () => {
   const serverLLM = useServerLLM({
     endpoint: llmConfig.endpoint,
     model: llmConfig.model,
+    type: llmConfig.type === 'browser' ? 'ollama' : llmConfig.type,
   });
   
   const activeLLM = llmConfig.type === 'browser' ? browserLLM : serverLLM;
@@ -148,13 +156,88 @@ const Index = () => {
       setCurrentResponse('');
 
       // Extract and apply floor plan data if present
-      const floorPlanData = extractFloorPlanData(response);
-      if (floorPlanData && floorPlanData.rooms.length > 0) {
-        setRooms(floorPlanData.rooms);
-        toast({
-          title: 'Floor plan generated',
-          description: `Added ${floorPlanData.rooms.length} rooms to the visualization`,
-        });
+      const parsed = extractFloorPlanData(response);
+      if (parsed && parsed.rooms.length > 0) {
+        // Update local plot settings from parsed data
+        setPlotWidth(parsed.plotWidth ?? 30);
+        setPlotLength(parsed.plotLength ?? 30);
+        setPlotShape(parsed.plotShape ?? 'rectangular');
+        // Optional shape constraints
+        const poly = (parsed as any).plot_polygon || parsed.constraints?.plot_polygon;
+        const circ = (parsed as any).circle || parsed.constraints?.circle;
+        setPlotPolygon(poly);
+        setPlotCircle(circ);
+
+        // Call backend solver to position rooms and avoid overlaps
+        try {
+          const facingMatch = /west\s*facing/i.test(content) ? 'west' : /east\s*facing/i.test(content) ? 'east' : undefined;
+          const genRes = await fetch('http://localhost:8000/api/solvers/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rooms: parsed.rooms,
+              plotWidth: parsed.plotWidth ?? 30,
+              plotLength: parsed.plotLength ?? 30,
+              plotShape: parsed.plotShape ?? 'rectangular',
+              solver_type: 'graph',
+              constraints: {
+                ...(facingMatch ? { house_facing: facingMatch } : {}),
+                ...(poly ? { plot_polygon: poly } : {}),
+                ...(circ ? { circle: circ } : {}),
+              }
+            })
+          });
+
+          if (!genRes.ok) throw new Error(`Generate API failed: ${genRes.status}`);
+          const genJson = await genRes.json();
+
+          // Apply positioned rooms
+          const positionedRooms: Room[] = (genJson.rooms || []).map((r: any) => ({
+            id: r.id,
+            name: r.name,
+            type: r.type,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+            color: r.color,
+          }));
+          setRooms(positionedRooms);
+
+          // Validate for Vastu scores
+          try {
+            const valRes = await fetch('http://localhost:8000/api/validation/validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rooms: positionedRooms, constraints: facingMatch ? { house_facing: facingMatch } : undefined })
+            });
+            if (valRes.ok) {
+              const valJson = await valRes.json();
+              const overall = typeof valJson.vastu_score === 'number' ? Math.round(valJson.vastu_score) : undefined;
+              setVastuScore(overall !== undefined ? {
+                overall,
+                entranceCompliance: Math.round(valJson.entrance_compliance ?? overall ?? 0),
+                roomPlacement: Math.round(valJson.room_placement_score ?? overall ?? 0),
+                directionAlignment: Math.round(valJson.direction_alignment_score ?? overall ?? 0),
+              } : undefined);
+            }
+          } catch (e) {
+            console.error('Validation error', e);
+          }
+
+          toast({
+            title: 'Floor plan generated',
+            description: `Optimized ${positionedRooms.length} rooms for ${parsed.plotWidth ?? 30}×${parsed.plotLength ?? 30} plot`,
+          });
+        } catch (e) {
+          console.error('Generation error', e);
+          // Fallback: use parsed rooms directly
+          setRooms(parsed.rooms);
+          toast({
+            title: 'Floor plan parsed',
+            description: `Added ${parsed.rooms.length} rooms (generation fallback)`,
+          });
+        }
       }
     } catch (err) {
       toast({
@@ -202,9 +285,9 @@ const Index = () => {
 
   const floorPlanData: FloorPlanData = {
     rooms,
-    plotWidth: 30,
-    plotLength: 30,
-    plotShape: 'rectangular'
+    plotWidth,
+    plotLength,
+    plotShape: plotShape as 'rectangular' | 'L-shaped' | 'T-shaped' | 'irregular'
   };
 
   const handleInitialize = async () => {
@@ -320,7 +403,7 @@ const Index = () => {
                 )}
 
                 {activeSession?.messages.map((message, index) => (
-                  <ChatMessage key={index} message={message} />
+                  <ChatMessage key={`message-${index}`} message={message} />
                 ))}
 
                 {currentResponse && (
@@ -356,33 +439,58 @@ const Index = () => {
 
         {/* Visualization Panel */}
         <ResizablePanel defaultSize={50} minSize={30}>
-          <div className="flex h-full flex-col">
-        <div className="flex-1 p-6">
-          <Tabs defaultValue="2d" className="h-full">
-            <TabsList className="grid w-full grid-cols-2 mb-4">
-              <TabsTrigger value="2d">2D View</TabsTrigger>
-              <TabsTrigger value="3d">3D Walkthrough</TabsTrigger>
-            </TabsList>
-            <TabsContent value="2d" className="h-[calc(100%-3rem)]">
-              <FloorPlanViewer rooms={rooms} plotWidth={30} plotLength={30} />
-            </TabsContent>
-            <TabsContent value="3d" className="h-[calc(100%-3rem)]">
-              <FloorPlan3DViewer rooms={rooms} plotWidth={30} plotLength={30} />
-            </TabsContent>
-          </Tabs>
-        </div>
+          <ResizablePanelGroup direction="vertical" className="h-full">
+            {/* Layout Area */}
+            <ResizablePanel defaultSize={70} minSize={30} className="overflow-hidden">
+              <div className="h-full overflow-auto p-6">
+                <Tabs defaultValue="2d" className="h-full">
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="2d">2D View</TabsTrigger>
+                      <TabsTrigger value="3d">3D View</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="2d" className="h-[calc(100%-40px)]">
+                      <FloorPlanViewer 
+                        rooms={rooms} 
+                        plotWidth={plotWidth} 
+                        plotLength={plotLength} 
+                        plotShape={plotShape}
+                        plotPolygon={plotPolygon}
+                        circle={plotCircle}
+                        selectedRoomId={selectedRoomId}
+                      />
+                    </TabsContent>
+                    <TabsContent value="3d" className="h-[calc(100%-40px)]">
+                      <FloorPlan3DViewer 
+                        rooms={rooms} 
+                        plotWidth={plotWidth} 
+                        plotLength={plotLength}
+                        selectedRoomId={selectedRoomId}
+                      />
+                    </TabsContent>
+                  </Tabs>
+              </div>
+            </ResizablePanel>
 
-        <div className="grid grid-cols-3 gap-4 border-t border-border p-6">
-          <VastuScoreCard />
-          <ExportPanel hasFloorPlan={rooms.length > 0} floorPlanData={floorPlanData} />
-          <RoomAdjustmentPanel
-            rooms={rooms}
-            onUpdateRoom={handleUpdateRoom}
-            onDeleteRoom={handleDeleteRoom}
-            onAddRoom={handleAddRoom}
-          />
-        </div>
-          </div>
+            <ResizableHandle withHandle />
+
+            {/* Scores and Export Area */}
+            <ResizablePanel defaultSize={30} minSize={20} className="overflow-hidden">
+              <div className="h-full overflow-auto border-t border-border">
+                <div className="grid grid-cols-3 gap-4 p-6">
+                  <VastuScoreCard score={vastuScore} />
+                  <ExportPanel hasFloorPlan={rooms.length > 0} floorPlanData={floorPlanData} />
+                  <RoomAdjustmentPanel
+                    rooms={rooms}
+                    onUpdateRoom={handleUpdateRoom}
+                    onDeleteRoom={handleDeleteRoom}
+                    onAddRoom={handleAddRoom}
+                    selectedRoomId={selectedRoomId}
+                    onSelectRoom={setSelectedRoomId}
+                  />
+                </div>
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>

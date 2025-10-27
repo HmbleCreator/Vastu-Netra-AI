@@ -137,14 +137,38 @@ export function downloadFile(content: string, filename: string, mimeType: string
  * Export as PDF (converts SVG to PDF)
  */
 export async function exportAsPDF(data: FloorPlanData): Promise<void> {
+  // Import dynamically to avoid SSR issues
+  const { jsPDF } = await import('jspdf');
+  const svg2pdf = (await import('svg2pdf.js')).default;
+  
   // Generate SVG first
   const svg = exportAsSVG(data);
   
-  // For now, download the SVG - in production, you'd use a library like jsPDF
-  // to convert SVG to PDF
-  downloadFile(svg, 'floor-plan.svg', 'image/svg+xml');
-  
-  // TODO: Implement actual PDF conversion using jsPDF + svg2pdf
-  // import { jsPDF } from 'jspdf';
-  // import 'svg2pdf.js';
+  try {
+    // Create a new jsPDF instance
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4'
+    });
+    
+    // Create an SVG element from the string
+    const svgElement = document.createElement('div');
+    svgElement.innerHTML = svg;
+    const svgNode = svgElement.firstChild as SVGElement;
+    
+    // Convert SVG to PDF
+    await svg2pdf(svgNode, doc, {
+      xOffset: 10,
+      yOffset: 10,
+      scale: 0.7
+    });
+    
+    // Save the PDF
+    doc.save('floor-plan.pdf');
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    // Fallback to SVG if PDF generation fails
+    downloadFile(svg, 'floor-plan.svg', 'image/svg+xml');
+  }
 }
