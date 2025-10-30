@@ -15,11 +15,38 @@ interface FloorPlanJSON {
 
 export function extractFloorPlanData(content: string): FloorPlanJSON | null {
   try {
-    // Look for JSON code block
-    const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
-    if (!jsonMatch) return null;
+    // Primary: Look for JSON fenced code block (markdown)
+    let jsonStr: string | null = null;
+    const fencedMatch = content.match(/```json\s*([\s\S]*?)\s*```/i);
+    if (fencedMatch) {
+      jsonStr = fencedMatch[1];
+    }
 
-    const jsonStr = jsonMatch[1];
+    // Secondary: Some markdown renderers convert code blocks to HTML (<pre><code class="language-json">...)
+    // Try to extract JSON inside HTML code blocks if fenced markdown not present
+    if (!jsonStr) {
+      const htmlCodeMatch = content.match(/<pre[^>]*>\s*<code[^>]*(?:class=["'][^"']*json[^"']*["'])?[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/i)
+        || content.match(/<code[^>]*(?:class=["'][^"']*json[^"']*["'])?[^>]*>([\s\S]*?)<\/code>/i);
+      if (htmlCodeMatch) {
+        // inner HTML may contain escaped entities - unescape common ones
+        const htmlInner = htmlCodeMatch[1];
+        jsonStr = htmlInner
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&#39;/g, "'");
+      }
+    }
+
+    // Tertiary fallback: try to find a JSON object containing a "rooms" key anywhere in the text
+    if (!jsonStr) {
+      const looseJsonMatch = content.match(/(\{[\s\S]*?"rooms"\s*:\s*\[[\s\S]*?\][\s\S]*?\})/i);
+      if (looseJsonMatch) jsonStr = looseJsonMatch[1];
+    }
+
+    if (!jsonStr) return null;
+
     const data = JSON.parse(jsonStr) as FloorPlanJSON;
 
     // Validate the data structure

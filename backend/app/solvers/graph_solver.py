@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import networkx as nx
 import numpy as np
 from pydantic import BaseModel, Field, validator
+from ..utils import geometry_utils as gu
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -73,6 +74,12 @@ class SolverRequest(BaseModel):
     plot_width: float = Field(30.0, gt=0)
     plot_length: float = Field(30.0, gt=0)
     plot_shape: str = "rectangular"
+    # Optional polygon for irregular/triangular/custom shapes: list of [x,y]
+    plot_polygon: Optional[List[List[float]]] = None
+    # Orientation details and metadata (e.g. {'hypotenuse_direction': 'west', 'right_angle_at': 'east'})
+    orientation: Optional[Dict[str, Any]] = None
+    # List of room ids/types considered outdoor (helps two-phase solver)
+    outdoor_fixtures: Optional[List[str]] = None
     constraints: Optional[Dict[str, Any]] = None
     seed: Optional[int] = None
 
@@ -253,6 +260,8 @@ class GraphBasedLayoutSolver:
         self.plot_polygon = None
         self.plot_circle: Optional[Dict[str, Any]] = None  # {center: [x,y], radius: r}
         self.constraints: Dict[str, Any] = {}
+        # Nodes that should remain fixed (used by two-phase solver)
+        self.fixed_nodes: set = set()
         
         # Random seed for reproducibility
         if seed is not None:
@@ -368,6 +377,10 @@ class GraphBasedLayoutSolver:
         if not vastu_pref and not outdoor_pref:
             # Default to center
             return np.array([self.plot_width / 2, self.plot_length / 2])
+
+        # If triangular plot, delegate to triangle-aware mapping
+        if self.plot_shape == "triangular":
+            return self._get_vastu_target_position_triangular(room_type)
         
         # Map direction to position
         direction_map = {
@@ -404,6 +417,66 @@ class GraphBasedLayoutSolver:
             return direction_map.get(preferred[0], np.array([self.plot_width / 2, self.plot_length / 2]))
         
         return np.array([self.plot_width / 2, self.plot_length / 2])
+
+
+    def _get_vastu_target_position_triangular(self, room_type: str) -> np.ndarray:
+        """Triangle-aware Vastu target mapping.
+
+        Uses centroid and inradius to calculate a safe placement point inside the triangle
+        that approximates the requested Vastu direction.
+        """
+        # Ensure we have a polygon
+        if not self.plot_polygon or len(self.plot_polygon) < 3:
+            return np.array([self.plot_width / 2, self.plot_length / 2])
+
+        # centroid and inradius
+        centroid = np.array(gu.calculate_polygon_centroid(self.plot_polygon))
+        inradius = gu.calculate_polygon_inradius(self.plot_polygon)
+        safe_radius = max(0.1, inradius * 0.7)
+
+        rt = self._normalize_room_type(room_type)
+        vastu_pref = VASTU_PREFERENCES.get(rt) if rt else None
+        outdoor_pref = OUTDOOR_VASTU_PREFERENCES.get(str(room_type).lower())
+
+        # default to centroid
+        if not vastu_pref and not outdoor_pref:
+            return centroid
+
+        preferred = list(vastu_pref["preferred"]) if vastu_pref else []
+        if outdoor_pref and not preferred:
+            preferred = list(outdoor_pref.get("preferred", []))
+
+        # map Direction enum to angles with 0 = East, 90 = North
+        angle_map = {
+            Direction.EAST: 0,
+            Direction.NORTHEAST: 45,
+            Direction.NORTH: 90,
+            Direction.NORTHWEST: 135,
+            Direction.WEST: 180,
+            Direction.SOUTHWEST: 225,
+            Direction.SOUTH: 270,
+            Direction.SOUTHEAST: 315,
+            Direction.CENTER: None
+        }
+
+        if not preferred:
+            return centroid
+
+        dir_enum = preferred[0]
+        angle = angle_map.get(dir_enum)
+        if angle is None:
+            return centroid
+
+        rad = np.radians(angle)
+        offset = np.array([safe_radius * np.cos(rad), safe_radius * np.sin(rad)])
+        target = centroid + offset
+
+        # Final safety: if outside, project back to polygon
+        if not gu.point_in_polygon((float(target[0]), float(target[1])), self.plot_polygon):
+            proj = gu.project_point_inside((float(target[0]), float(target[1])), self.plot_polygon)
+            return np.array(proj)
+
+        return target
     
     def _initialize_positions(self, rooms: List[Dict[str, Any]]):
         """Initialize room positions, velocities, and dimensions"""
@@ -448,24 +521,8 @@ class GraphBasedLayoutSolver:
         """Check if point is inside polygon using ray casting"""
         if not self.plot_polygon:
             return True
-        
-        x, y = point
-        n = len(self.plot_polygon)
-        inside = False
-        
-        p1x, p1y = self.plot_polygon[0]
-        for i in range(1, n + 1):
-            p2x, p2y = self.plot_polygon[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        
-        return inside
+        # delegate to shared geometry util (accepts tuple)
+        return gu.point_in_polygon((float(point[0]), float(point[1])), self.plot_polygon)
     
     def _project_point_to_edge(self, point: np.ndarray, edge_start: np.ndarray, edge_end: np.ndarray) -> Tuple[np.ndarray, float]:
         """Project point onto edge, return projected point and distance"""
@@ -485,37 +542,23 @@ class GraphBasedLayoutSolver:
         """Project room center to be inside polygon"""
         if not self.plot_polygon:
             return pos
-        
-        # Check all four corners
+
+        # If any corner is outside, project that corner inside and adjust center accordingly.
         corners = [
             pos + np.array([-width/2, -height/2]),
             pos + np.array([width/2, -height/2]),
             pos + np.array([width/2, height/2]),
             pos + np.array([-width/2, height/2])
         ]
-        
-        # If any corner is outside, project back
+
         for corner in corners:
-            if not self._point_in_polygon(corner):
-                # Find nearest edge and project
-                min_dist = float('inf')
-                best_proj = corner
-                
-                n = len(self.plot_polygon)
-                for i in range(n):
-                    edge_start = np.array(self.plot_polygon[i])
-                    edge_end = np.array(self.plot_polygon[(i + 1) % n])
-                    
-                    proj, dist = self._project_point_to_edge(corner, edge_start, edge_end)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_proj = proj
-                
-                # Adjust center based on corner projection
+            if not gu.point_in_polygon((float(corner[0]), float(corner[1])), self.plot_polygon):
+                proj = gu.project_point_inside((float(corner[0]), float(corner[1])), self.plot_polygon)
+                proj = np.array(proj)
                 corner_offset = corner - pos
-                pos = best_proj - corner_offset
+                pos = proj - corner_offset
                 break
-        
+
         return pos
 
     def _project_inside_circle(self, pos: np.ndarray, width: float, height: float) -> np.ndarray:
@@ -652,7 +695,8 @@ class GraphBasedLayoutSolver:
                                 normal = -normal
                             best_normal = normal
                     
-                    force += self.params.boundary_force_strength * min_dist * best_normal
+            # For irregular polygons, keep standard strength
+            force += self.params.boundary_force_strength * min_dist * best_normal
             return force
 
         # Circular boundaries
@@ -679,15 +723,16 @@ class GraphBasedLayoutSolver:
         if self.plot_shape == "triangular":
             # Left and top hard boundaries
             if pos[0] - width/2 < 0:
-                force[0] += self.params.boundary_force_strength * abs(pos[0] - width/2)
+                force[0] += (self.params.boundary_force_strength * 5.0) * abs(pos[0] - width/2)
             if pos[1] - height/2 < 0:
-                force[1] += self.params.boundary_force_strength * abs(pos[1] - height/2)
+                force[1] += (self.params.boundary_force_strength * 5.0) * abs(pos[1] - height/2)
             # Hypotenuse boundary: (x+w/2)/W + (y+h/2)/L <= 1
             corner = pos + np.array([width/2, height/2])
             val = corner[0] / self.plot_width + corner[1] / self.plot_length - 1.0
             if val > 0:
                 grad = np.array([1.0 / self.plot_width, 1.0 / self.plot_length])
-                force -= self.params.boundary_force_strength * val * grad * max(width, height)
+                # multiply force strength for triangular plots to prevent escape
+                force -= (self.params.boundary_force_strength * 5.0) * val * grad * max(width, height)
             return force
 
         # Rectangular boundaries (default)
@@ -754,8 +799,14 @@ class GraphBasedLayoutSolver:
         # Update velocities and positions
         for room_id in self.positions.keys():
             # Update velocity: v = (v + F) * damping
+            # If node is fixed (phase-1 indoor), don't update its velocity/position
+            if room_id in getattr(self, "fixed_nodes", set()):
+                # ensure velocity zeroed
+                self.velocities[room_id] = np.zeros(2)
+                continue
+
             self.velocities[room_id] = (self.velocities[room_id] + forces[room_id]) * self.params.damping
-            
+
             # Update position: pos = pos + v * dt
             self.positions[room_id] += self.velocities[room_id] * self.params.time_step
             
@@ -777,6 +828,14 @@ class GraphBasedLayoutSolver:
                     alpha = val / np.dot(grad, grad)
                     corner = corner - alpha * grad
                     self.positions[room_id] = corner - np.array([width/2, height/2])
+                # Extra safety: if center somehow outside polygon, snap back
+                center = self.positions[room_id]
+                if self.plot_polygon and not gu.point_in_polygon((float(center[0]), float(center[1])), self.plot_polygon):
+                    proj = gu.project_point_inside((float(center[0]), float(center[1])), self.plot_polygon)
+                    # project returns a point; keep same relative offset of center
+                    self.positions[room_id] = np.array(proj)
+                # Ensure all corners are inside after snapping
+                self.positions[room_id] = self._project_inside_polygon(self.positions[room_id], width, height)
             else:
                 self.positions[room_id][0] = np.clip(
                     self.positions[room_id][0],
@@ -905,7 +964,57 @@ class GraphBasedLayoutSolver:
     # ========================================================================
     # SCORING
     # ========================================================================
-    
+    def _infer_direction_from_pos(self, pos: np.ndarray) -> Direction:
+        """Infer Vastu direction from a room center position relative to plot.
+
+        Uses the same orientation convention as `_get_vastu_target_position`:
+        smaller y => north, smaller x => east.
+        """
+        fx = pos[0] / self.plot_width if self.plot_width > 0 else 0.5
+        fy = pos[1] / self.plot_length if self.plot_length > 0 else 0.5
+
+        # Near center tolerance
+        if abs(fx - 0.5) < 0.15 and abs(fy - 0.5) < 0.15:
+            return Direction.CENTER
+
+        # Column buckets
+        if fx < 0.33:
+            col = "left"  # maps to EAST in this coordinate convention
+        elif fx > 0.66:
+            col = "right"  # maps to WEST
+        else:
+            col = "center"
+
+        # Row buckets
+        if fy < 0.33:
+            row = "top"  # NORTH
+        elif fy > 0.66:
+            row = "bottom"  # SOUTH
+        else:
+            row = "center"
+
+        if row == "top":
+            if col == "left":
+                return Direction.NORTHEAST
+            elif col == "center":
+                return Direction.NORTH
+            else:
+                return Direction.NORTHWEST
+        elif row == "bottom":
+            if col == "left":
+                return Direction.SOUTHEAST
+            elif col == "center":
+                return Direction.SOUTH
+            else:
+                return Direction.SOUTHWEST
+        else:
+            if col == "left":
+                return Direction.EAST
+            elif col == "right":
+                return Direction.WEST
+            else:
+                return Direction.CENTER
+
     def _calculate_score(self, G: nx.Graph) -> float:
         """Calculate quality score (0-100)"""
         score = 100.0
@@ -967,6 +1076,42 @@ class GraphBasedLayoutSolver:
                 if (pos[0] - w/2 < 0 or pos[0] + w/2 > self.plot_width or
                     pos[1] - h/2 < 0 or pos[1] + h/2 > self.plot_length):
                     score -= 10
+
+        # 4. Vastu direction compliance and zoning bonuses
+        for room_id, pos in self.positions.items():
+            room_type_raw = G.nodes[room_id].get('room_type')
+            rt = self._normalize_room_type(room_type_raw)
+            is_outdoor = _is_outdoor(room_type_raw)
+
+            # Get preferences (indoor via enum, outdoor via string map)
+            prefs: Optional[Dict[str, Any]] = None
+            if rt:
+                prefs = VASTU_PREFERENCES.get(rt)
+            if is_outdoor and prefs is None:
+                prefs = OUTDOOR_VASTU_PREFERENCES.get(str(room_type_raw).lower(), None)
+
+            if not prefs:
+                continue
+
+            direction = self._infer_direction_from_pos(pos)
+            weight = float(prefs.get("weight", 0.5)) if isinstance(prefs, dict) else 0.5
+            preferred = set(prefs.get("preferred", [])) if isinstance(prefs, dict) else set()
+            acceptable = set(prefs.get("acceptable", [])) if isinstance(prefs, dict) else set()
+            avoid = set(prefs.get("avoid", [])) if isinstance(prefs, dict) else set()
+
+            if direction in preferred:
+                score += 1.5 * weight
+            elif direction in acceptable:
+                score += 0.5 * weight
+            elif direction in avoid:
+                score -= 2.0 * weight
+
+        # 5. Aspect ratio penalty for unrealistic elongated rooms
+        for room_id, (w, h) in self.dimensions.items():
+            if w and h and min(w, h) > 0:
+                ratio = max(w, h) / min(w, h)
+                if ratio > 2.2:
+                    score -= (ratio - 2.2) * 3.0
         
         return max(0, min(100, score))
     
@@ -983,6 +1128,8 @@ class GraphBasedLayoutSolver:
         start_time = time.time()
         
         warnings = []
+        # Ensure graph reference exists for scoring phase
+        G = None  # type: ignore
         
         try:
             # Make sure solver has up-to-date plot shape and constraints
@@ -1016,14 +1163,55 @@ class GraphBasedLayoutSolver:
                     self.plot_circle = {"center": [self.plot_width/2, self.plot_length/2], "radius": min(self.plot_width, self.plot_length)/2}
                     logger.info("Inferred circular plot from dimensions")
             
-            # Build adjacency graph
-            G = self._build_adjacency_graph(request.rooms)
-            
-            # Initialize positions
-            self._initialize_positions(request.rooms)
-            
-            # Run physics simulation
-            converged, iterations = self._run_simulation(G)
+            # Two-phase solving: place indoor rooms first, then outdoor fixtures
+            outdoor_list = set(request.outdoor_fixtures or [])
+
+            def _is_room_outdoor(room: Dict[str, Any]) -> bool:
+                # Mark outdoor based on explicit list (id or type) or by type heuristic
+                if _is_outdoor(room.get("type", "")):
+                    return True
+                if room.get("id") in outdoor_list or room.get("type") in outdoor_list:
+                    return True
+                return False
+
+            indoor_rooms = [r for r in request.rooms if not _is_room_outdoor(r)]
+            outdoor_rooms = [r for r in request.rooms if _is_room_outdoor(r)]
+
+            # Phase 1: indoor-only placement
+            if indoor_rooms:
+                G_indoor = self._build_adjacency_graph(indoor_rooms)
+                self._initialize_positions(indoor_rooms)
+                converged, iterations = self._run_simulation(G_indoor)
+                overlap_count = self._resolve_overlaps()
+                if overlap_count > 0:
+                    warnings.append(f"Phase-1: {overlap_count} indoor overlaps remain")
+                # Freeze indoor nodes for phase 2
+                self.fixed_nodes = set(r["id"] for r in indoor_rooms)
+                # If there are no outdoor rooms, use the indoor graph for scoring
+                G = G_indoor
+            else:
+                converged, iterations = True, 0
+
+            # Phase 2: place outdoor fixtures into remaining space (if any)
+            if outdoor_rooms:
+                # initialize outdoor room positions (will not overwrite indoor positions)
+                self._initialize_positions(outdoor_rooms)
+                # build full graph (indoor nodes will be present and fixed)
+                G = self._build_adjacency_graph(request.rooms)
+                converged2, iterations2 = self._run_simulation(G)
+                # merge iteration counts
+                iterations = iterations + (iterations2 if 'iterations2' in locals() else 0)
+                if not converged2:
+                    warnings.append("Phase-2: outdoor placement did not fully converge")
+                overlap_count2 = self._resolve_overlaps()
+                if overlap_count2 > 0:
+                    warnings.append(f"Phase-2: {overlap_count2} overlaps remain after outdoor placement")
+            else:
+                # no outdoor rooms, ensure we at least had a graph run above
+                if not indoor_rooms:
+                    G = self._build_adjacency_graph(request.rooms)
+                    self._initialize_positions(request.rooms)
+                    converged, iterations = self._run_simulation(G)
             
             if not converged:
                 warnings.append("Physics simulation did not fully converge")
@@ -1034,6 +1222,11 @@ class GraphBasedLayoutSolver:
                 warnings.append(f"{overlap_count} room overlaps could not be resolved")
             
             # Calculate score
+            # Guard against uninitialized graph reference
+            if G is None:
+                # Build a graph from whatever rooms we have positions for
+                rooms_for_graph = request.rooms if request.rooms else []
+                G = self._build_adjacency_graph(rooms_for_graph)
             score = self._calculate_score(G)
             
             # Build response

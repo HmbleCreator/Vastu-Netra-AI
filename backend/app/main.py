@@ -1,9 +1,13 @@
 from fastapi import FastAPI
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Vastu AI Architect API", 
               description="API for floor plan validation and generation based on Vastu principles",
               version="1.0.0")
+
+# Configure logging to show info-level logs from routers and solvers
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 
 # Configure CORS
 app.add_middleware(
@@ -17,6 +21,23 @@ app.add_middleware(
 @app.get("/")
 async def root():
     return {"message": "Welcome to Vastu AI Architect API"}
+
+
+@app.get("/health")
+async def health():
+    """Health endpoint for local checks / Electron launcher.
+
+    Returns a small JSON with service status and available solver endpoints.
+    """
+    return {
+        "status": "ok",
+        "service": "vastu-ai-architect-backend",
+        "version": "1.0.0",
+        "routes": [
+            "/api/validation",
+            "/api/solvers/generate"
+        ]
+    }
 
 # Import routers
 from .routers import validation, solvers

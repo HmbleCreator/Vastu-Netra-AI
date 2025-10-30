@@ -167,6 +167,85 @@ const Index = () => {
         },
       ] : undefined;
 
+      const startTime = performance.now();
+      console.log('[HandleSend][Start]', { timestamp: Date.now(), llmConfig });
+      let toolCallHandled = false;
+      // Watchdog fallback: if no tool call or response after 10s, try direct generation from prompt
+      const watchdog = setTimeout(async () => {
+        if (toolCallHandled) return;
+        try {
+          console.warn('[Watchdog] No tool call detected, triggering fallback generation');
+          // Heuristic extraction from prompt
+          const bhkMatch = content.match(/(\d)\s*bhk/i);
+          const bhk = bhkMatch ? Number(bhkMatch[1]) : 2;
+          const areaMatch = content.match(/(\d+\.?\d*)\s*(sq\s*ft|ft\^2)/i);
+          const widthMatch = content.match(/(\d+\.?\d*)\s*ft\s*width/i);
+          const area = areaMatch ? Number(areaMatch[1]) : (plotWidth * plotLength);
+          const width = widthMatch ? Number(widthMatch[1]) : plotWidth;
+          const length = Math.max(10, Math.round((area / width) * 100) / 100);
+          const facingMatch = /west\s*facing/i.test(content) ? 'west' : /east\s*facing/i.test(content) ? 'east' : undefined;
+          // Build minimal rooms from BHK
+          const baseRooms: Room[] = [];
+          baseRooms.push({ id: 'living', name: 'Living Room', type: 'living', width: 10, height: 10, x: 0, y: 0 });
+          baseRooms.push({ id: 'kitchen', name: 'Kitchen', type: 'kitchen', width: 8, height: 8, x: 0, y: 0 });
+          const bathrooms = Math.max(1, Math.round(bhk / 2));
+          for (let i = 1; i <= bhk; i++) {
+            baseRooms.push({ id: `bed_${i}`, name: `Bedroom ${i}`, type: i === 1 ? 'master_bedroom' : 'bedroom', width: 12, height: 10, x: 0, y: 0 });
+          }
+          for (let i = 1; i <= bathrooms; i++) {
+            baseRooms.push({ id: `bath_${i}`, name: `Bathroom ${i}`, type: 'bathroom', width: 6, height: 6, x: 0, y: 0 });
+          }
+          const payload = {
+            rooms: baseRooms,
+            plotWidth: width,
+            plotLength: length,
+            plotShape: 'rectangular',
+            solver_type: 'graph',
+            constraints: {
+              ...(facingMatch ? { house_facing: facingMatch } : {})
+            }
+          };
+          console.log('[Watchdog][GenerateAPI][Request]', payload);
+          let genRes = await fetch('http://localhost:8000/api/solvers/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!genRes.ok) {
+            console.warn('[Watchdog] Graph solver failed, retrying with constraint');
+            genRes = await fetch('http://localhost:8000/api/solvers/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...payload, solver_type: 'constraint' })
+            });
+          }
+          const genJson = await genRes.json();
+          console.log('[Watchdog][GenerateAPI][ResponseStatus]', genRes.status);
+          console.log('[Watchdog][GenerateAPI][ResponseBody]', genJson);
+          if (genRes.ok && genJson.rooms) {
+            const positionedRooms: Room[] = (genJson.rooms || []).map((r: any) => ({
+              id: r.id,
+              name: r.name,
+              type: r.type,
+              x: r.x,
+              y: r.y,
+              width: r.width,
+              height: r.height,
+              color: r.color,
+            }));
+            setRooms(positionedRooms);
+            toast({
+              title: 'Fallback floor plan generated',
+              description: `Generated ${positionedRooms.length} rooms for ${width}×${length} plot`,
+            });
+          } else {
+            console.error('[Watchdog] Fallback generation failed');
+            toast({ title: 'Generation failed', description: 'Fallback generation failed', variant: 'destructive' });
+          }
+        } catch (e) {
+          console.error('[Watchdog] Exception', e);
+        }
+      }, 10000);
       const response = await generateResponse(
         [
           { role: 'system', content: SYSTEM_PROMPT, timestamp: Date.now() },
@@ -177,7 +256,7 @@ const Index = () => {
         tools,
         (toolCall, result) => {
           // Handle tool call results
-          console.log('Tool call result:', toolCall.function.name, result);
+          console.log('[ToolCall]', toolCall.function.name, result);
           
           if (toolCall.function.name === 'generate_layout_hybrid' && result.status === 'success') {
             setRooms(result.rooms);
@@ -185,9 +264,24 @@ const Index = () => {
               title: "Floor Plan Generated",
               description: `Generated ${result.rooms.length} rooms using ${result.solver} solver (${result.generation_time?.toFixed(1)}s)`,
             });
+            toolCallHandled = true;
+            clearTimeout(watchdog);
+          } else if (toolCall.function.name === 'generate_layout_hybrid' && result.status !== 'success') {
+            console.error('[ToolCall][Error] generate_layout_hybrid failed:', result);
+            toast({
+              title: 'Generation failed',
+              description: typeof result.message === 'string' ? result.message : 'Unknown error during layout generation',
+              variant: 'destructive',
+            });
+            toolCallHandled = true;
+            clearTimeout(watchdog);
           }
         }
       );
+      const endTime = performance.now();
+      console.log('LLM response time (ms):', Math.round(endTime - startTime));
+      console.log('LLM response length:', response?.length ?? 0);
+      clearTimeout(watchdog);
 
       const assistantMessage: Message = {
         role: 'assistant',
@@ -215,25 +309,29 @@ const Index = () => {
         // Call backend solver to position rooms and avoid overlaps
         try {
           const facingMatch = /west\s*facing/i.test(content) ? 'west' : /east\s*facing/i.test(content) ? 'east' : undefined;
+          const payload = {
+            rooms: parsed.rooms,
+            plotWidth: parsed.plotWidth ?? 30,
+            plotLength: parsed.plotLength ?? 30,
+            plotShape: parsed.plotShape ?? 'rectangular',
+            solver_type: 'graph',
+            constraints: {
+              ...(facingMatch ? { house_facing: facingMatch } : {}),
+              ...(poly ? { plot_polygon: poly } : {}),
+              ...(circ ? { circle: circ } : {}),
+            }
+          };
+          console.log('[GenerateAPI][Request]', payload);
           const genRes = await fetch('http://localhost:8000/api/solvers/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              rooms: parsed.rooms,
-              plotWidth: parsed.plotWidth ?? 30,
-              plotLength: parsed.plotLength ?? 30,
-              plotShape: parsed.plotShape ?? 'rectangular',
-              solver_type: 'graph',
-              constraints: {
-                ...(facingMatch ? { house_facing: facingMatch } : {}),
-                ...(poly ? { plot_polygon: poly } : {}),
-                ...(circ ? { circle: circ } : {}),
-              }
-            })
+            body: JSON.stringify(payload)
           });
 
           if (!genRes.ok) throw new Error(`Generate API failed: ${genRes.status}`);
           const genJson = await genRes.json();
+          console.log('[GenerateAPI][ResponseStatus]', genRes.status);
+          console.log('[GenerateAPI][ResponseBody]', genJson);
 
           // Apply positioned rooms
           const positionedRooms: Room[] = (genJson.rooms || []).map((r: any) => ({

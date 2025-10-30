@@ -11,6 +11,7 @@ from enum import Enum
 import logging
 from functools import lru_cache
 from collections import defaultdict
+from ..utils import geometry_utils as gu
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,12 @@ class SolverRequest(BaseModel):
     plot_width: float = Field(30.0, gt=0, le=100)
     plot_length: float = Field(30.0, gt=0, le=100)
     plot_shape: str = "rectangular"
+    # Optional polygon for irregular/triangular/custom shapes
+    plot_polygon: Optional[List[List[float]]] = None
+    # Orientation metadata (e.g. {'hypotenuse_direction': 'west'})
+    orientation: Optional[Dict[str, Any]] = None
+    # IDs or types that are outdoor fixtures (garden, pool, parking)
+    outdoor_fixtures: Optional[List[str]] = None
     constraints: Optional[Dict[str, Any]] = None
     vastu_school: str = "modern"  # classical, modern, or flexible
     optimization_level: int = Field(2, ge=1, le=3)  # 1=fast, 2=balanced, 3=thorough
@@ -104,10 +111,16 @@ class SolverRequest(BaseModel):
     
     @validator('plot_shape')
     def validate_plot_shape(cls, v):
-        valid_shapes = ["rectangular", "square", "L_shaped", "T_shaped"]
-        if v not in valid_shapes:
-            raise ValueError(f"Plot shape must be one of: {valid_shapes}")
-        return v
+        # Normalize and allow broader set of shapes. Keep backwards compatibility.
+        if isinstance(v, str):
+            v_norm = v.lower().strip().replace('_', '-').replace(' ', '-')
+        else:
+            v_norm = v
+        allowed = {"rectangular", "square", "l-shaped", "t-shaped", "triangular", "irregular", "circular"}
+        if v_norm not in allowed:
+            # Fallback to rectangular instead of raising to be more tolerant
+            return "rectangular"
+        return v_norm
 
 class SolverResponse(BaseModel):
     """Enhanced solver response with detailed metrics"""
@@ -355,13 +368,22 @@ class EnhancedConstraintSolver:
     def __init__(self, 
                  plot_width: float = 30.0, 
                  plot_length: float = 30.0,
+                 plot_polygon: Optional[List[List[float]]] = None,
                  optimization_level: int = 2,
                  vastu_school: str = "modern",
                  seed: Optional[int] = None):
         
         self.plot_width = plot_width
         self.plot_length = plot_length
-        self.plot_area = plot_width * plot_length
+        # If provided, prefer polygon area to rectangular area
+        self.plot_polygon = plot_polygon
+        if self.plot_polygon:
+            try:
+                self.plot_area = gu.calculate_polygon_area(self.plot_polygon)
+            except Exception:
+                self.plot_area = plot_width * plot_length
+        else:
+            self.plot_area = plot_width * plot_length
         self.optimization_level = optimization_level
         self.vastu_school = vastu_school
         self.grid_size = 0.1  # Fine grid for precision
@@ -702,18 +724,29 @@ class EnhancedConstraintSolver:
         boundary_penalty = 0.0
         
         for room in positioned_rooms:
-            if room["x"] < 0:
-                boundary_penalty += abs(room["x"]) * 10
-                out_of_bounds += 1
-            if room["y"] < 0:
-                boundary_penalty += abs(room["y"]) * 10
-                out_of_bounds += 1
-            if room["x"] + room["width"] > self.plot_width:
-                boundary_penalty += (room["x"] + room["width"] - self.plot_width) * 10
-                out_of_bounds += 1
-            if room["y"] + room["height"] > self.plot_length:
-                boundary_penalty += (room["y"] + room["height"] - self.plot_length) * 10
-                out_of_bounds += 1
+            # If a polygon is provided, check center containment; otherwise use rectangular bounds
+            if getattr(self, "plot_polygon", None):
+                cx = room["x"] + room["width"] / 2.0
+                cy = room["y"] + room["height"] / 2.0
+                if not gu.point_in_polygon((float(cx), float(cy)), self.plot_polygon):
+                    proj = gu.project_point_inside((float(cx), float(cy)), self.plot_polygon)
+                    # penalty proportional to distance from valid region
+                    d = math.hypot(cx - proj[0], cy - proj[1])
+                    boundary_penalty += d * 10
+                    out_of_bounds += 1
+            else:
+                if room["x"] < 0:
+                    boundary_penalty += abs(room["x"]) * 10
+                    out_of_bounds += 1
+                if room["y"] < 0:
+                    boundary_penalty += abs(room["y"]) * 10
+                    out_of_bounds += 1
+                if room["x"] + room["width"] > self.plot_width:
+                    boundary_penalty += (room["x"] + room["width"] - self.plot_width) * 10
+                    out_of_bounds += 1
+                if room["y"] + room["height"] > self.plot_length:
+                    boundary_penalty += (room["y"] + room["height"] - self.plot_length) * 10
+                    out_of_bounds += 1
         
         metrics.out_of_bounds_count = out_of_bounds
         metrics.boundary_score = max(0, 100 - boundary_penalty)
@@ -923,9 +956,22 @@ class EnhancedConstraintSolver:
         dx = random.gauss(0, max_displacement)
         dy = random.gauss(0, max_displacement)
         
-        # Apply move with boundary constraints
-        room["x"] = np.clip(room["x"] + dx, 0, self.plot_width - room["width"])
-        room["y"] = np.clip(room["y"] + dy, 0, self.plot_length - room["height"])
+        # Apply move
+        room["x"] = room["x"] + dx
+        room["y"] = room["y"] + dy
+
+        # Enforce boundaries: polygon-aware if available, else rectangular clip
+        if getattr(self, "plot_polygon", None):
+            # Project center into polygon if needed
+            cx = room["x"] + room["width"] / 2.0
+            cy = room["y"] + room["height"] / 2.0
+            if not gu.point_in_polygon((float(cx), float(cy)), self.plot_polygon):
+                proj = gu.project_point_inside((float(cx), float(cy)), self.plot_polygon)
+                room["x"] = proj[0] - room["width"] / 2.0
+                room["y"] = proj[1] - room["height"] / 2.0
+        else:
+            room["x"] = np.clip(room["x"], 0, self.plot_width - room["width"])
+            room["y"] = np.clip(room["y"], 0, self.plot_length - room["height"])
         
         return True
     
@@ -944,11 +990,18 @@ class EnhancedConstraintSolver:
         room1["x"], room2["x"] = room2["x"], orig_x1
         room1["y"], room2["y"] = room2["y"], orig_y1
         
-        # Ensure both rooms fit
-        room1["x"] = np.clip(room1["x"], 0, self.plot_width - room1["width"])
-        room1["y"] = np.clip(room1["y"], 0, self.plot_length - room1["height"])
-        room2["x"] = np.clip(room2["x"], 0, self.plot_width - room2["width"])
-        room2["y"] = np.clip(room2["y"], 0, self.plot_length - room2["height"])
+        # Ensure both rooms fit (polygon-aware if available)
+        for r in (room1, room2):
+            if getattr(self, "plot_polygon", None):
+                cx = r["x"] + r["width"] / 2.0
+                cy = r["y"] + r["height"] / 2.0
+                if not gu.point_in_polygon((float(cx), float(cy)), self.plot_polygon):
+                    proj = gu.project_point_inside((float(cx), float(cy)), self.plot_polygon)
+                    r["x"] = proj[0] - r["width"] / 2.0
+                    r["y"] = proj[1] - r["height"] / 2.0
+            else:
+                r["x"] = np.clip(r["x"], 0, self.plot_width - r["width"])
+                r["y"] = np.clip(r["y"], 0, self.plot_length - r["height"])
         
         return True
     
@@ -977,9 +1030,17 @@ class EnhancedConstraintSolver:
             constraint.max_height
         )
         
-        # Ensure still within plot
-        room["x"] = np.clip(room["x"], 0, self.plot_width - room["width"])
-        room["y"] = np.clip(room["y"], 0, self.plot_length - room["height"])
+        # Ensure still within plot (polygon-aware if available)
+        if getattr(self, "plot_polygon", None):
+            cx = room["x"] + room["width"] / 2.0
+            cy = room["y"] + room["height"] / 2.0
+            if not gu.point_in_polygon((float(cx), float(cy)), self.plot_polygon):
+                proj = gu.project_point_inside((float(cx), float(cy)), self.plot_polygon)
+                room["x"] = proj[0] - room["width"] / 2.0
+                room["y"] = proj[1] - room["height"] / 2.0
+        else:
+            room["x"] = np.clip(room["x"], 0, self.plot_width - room["width"])
+            room["y"] = np.clip(room["y"], 0, self.plot_length - room["height"])
         
         return True
     
@@ -992,10 +1053,18 @@ class EnhancedConstraintSolver:
         room["width"], room["height"] = room["height"], room["width"]
         
         # Ensure still within plot
-        if room["x"] + room["width"] > self.plot_width:
-            room["x"] = self.plot_width - room["width"]
-        if room["y"] + room["height"] > self.plot_length:
-            room["y"] = self.plot_length - room["height"]
+        if getattr(self, "plot_polygon", None):
+            cx = room["x"] + room["width"] / 2.0
+            cy = room["y"] + room["height"] / 2.0
+            if not gu.point_in_polygon((float(cx), float(cy)), self.plot_polygon):
+                proj = gu.project_point_inside((float(cx), float(cy)), self.plot_polygon)
+                room["x"] = proj[0] - room["width"] / 2.0
+                room["y"] = proj[1] - room["height"] / 2.0
+        else:
+            if room["x"] + room["width"] > self.plot_width:
+                room["x"] = self.plot_width - room["width"]
+            if room["y"] + room["height"] > self.plot_length:
+                room["y"] = self.plot_length - room["height"]
         
         return True
     
@@ -1151,6 +1220,7 @@ def solve_floor_plan(request: SolverRequest) -> SolverResponse:
     solver = EnhancedConstraintSolver(
         plot_width=request.plot_width,
         plot_length=request.plot_length,
+        plot_polygon=getattr(request, "plot_polygon", None) or (request.constraints or {}).get("plot_polygon"),
         optimization_level=request.optimization_level,
         vastu_school=request.vastu_school,
         seed=request.seed
