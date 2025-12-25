@@ -4,12 +4,9 @@ from typing import List, Dict, Optional, Any
 import logging
 import time
 
-# Import solver entry points using absolute package imports to preserve correct
-# package context. Relative imports or manipulating sys.path can cause
-# "attempted relative import beyond top-level package" when uvicorn loads
-# this module via the package path.
-from backend.app.solvers.graph_solver import SolverRequest as GraphSolverRequest, solve_floor_plan as graph_solve
-from backend.app.solvers.constraint_solver import SolverRequest as ConstraintSolverRequest, solve_floor_plan as constraint_solve
+# Import solver entry points using relative imports
+from ..solvers.graph_solver import SolverRequest as GraphSolverRequest, solve_floor_plan as graph_solve
+from ..solvers.constraint_solver import SolverRequest as ConstraintSolverRequest, solve_floor_plan as constraint_solve
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

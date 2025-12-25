@@ -1,6 +1,7 @@
 import { Message } from '@/hooks/useLocalLLM';
 import { User, Bot } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 
 interface ChatMessageProps {
   message: Message;
@@ -10,8 +11,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
 
   // Remove JSON code blocks from assistant messages for display
-  const displayContent = isUser 
-    ? message.content 
+  const displayContent = isUser
+    ? message.content
     : message.content.replace(/```json\s*[\s\S]*?\s*```/g, '').trim();
 
   return (
@@ -21,13 +22,12 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <Bot className="h-5 w-5" />
         </div>
       )}
-      
+
       <div
-        className={`max-w-[80%] rounded-lg px-4 py-2 transition-smooth ${
-          isUser
+        className={`max-w-[80%] rounded-lg px-4 py-2 transition-smooth ${isUser
             ? 'bg-primary text-primary-foreground'
             : 'bg-card border border-border'
-        }`}
+          }`}
       >
         {isUser ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed">
@@ -35,7 +35,30 @@ export function ChatMessage({ message }: ChatMessageProps) {
           </p>
         ) : (
           <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:mb-2 prose-headings:mt-3 prose-p:my-1 prose-ul:my-1 prose-ol:my-1">
-            <ReactMarkdown>{displayContent}</ReactMarkdown>
+            <ReactMarkdown
+              rehypePlugins={[rehypeRaw]}
+              components={{
+                // Style the details/summary elements for thinking content
+                details: ({ children, ...props }) => (
+                  <details
+                    {...props}
+                    className="my-2 rounded-lg border border-border bg-muted/50 p-2"
+                  >
+                    {children}
+                  </details>
+                ),
+                summary: ({ children, ...props }) => (
+                  <summary
+                    {...props}
+                    className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    {children}
+                  </summary>
+                ),
+              }}
+            >
+              {displayContent}
+            </ReactMarkdown>
           </div>
         )}
       </div>

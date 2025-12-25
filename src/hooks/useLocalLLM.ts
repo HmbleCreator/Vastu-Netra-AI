@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { pipeline } from '@huggingface/transformers';
+import { pipeline, env } from '@huggingface/transformers';
 
 export interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -20,17 +20,26 @@ export function useLocalLLM() {
     setError(null);
     
     try {
-      // Using Qwen2.5-0.5B-Instruct for fast inference
+      // Configure transformers for better WebGPU support
+      env.allowRemoteModels = true;
+      env.allowLocalModels = false;
+      
+      console.log('Initializing pipeline...');
+      
       modelRef.current = await pipeline(
         'text-generation',
         'onnx-community/Qwen2.5-0.5B-Instruct',
-        { device: 'webgpu' } as any
+        {
+          progress_callback: (progress) => {
+            console.log('Model loading progress:', progress);
+          }
+        } as any
       );
       console.log('Local LLM initialized successfully');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to initialize model';
-      setError(errorMessage);
       console.error('Error initializing LLM:', err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(errorMessage);
     } finally {
       setIsInitializing(false);
     }

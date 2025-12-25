@@ -220,15 +220,15 @@ ROOM_SIZES = {
 @dataclass
 class PhysicsParams:
     """Physics simulation parameters"""
-    max_iterations: int = 100
+    max_iterations: int = 200  # Increased for better convergence
     time_step: float = 0.1
     damping: float = 0.8
     attraction_strength: float = 0.5
-    repulsion_strength: float = 1.0
-    vastu_force_strength: float = 2.0
+    repulsion_strength: float = 3.0  # Increased to prevent clustering
+    vastu_force_strength: float = 1.0  # Reduced to allow more spread
     boundary_force_strength: float = 3.0
     convergence_threshold: float = 0.01
-    ideal_spacing: float = 1.0  # meters gap between adjacent rooms
+    ideal_spacing: float = 2.0  # Increased gap between rooms
 
 # ============================================================================
 # GRAPH-BASED SOLVER
@@ -488,9 +488,11 @@ class GraphBasedLayoutSolver:
             width, height = self._get_room_dimensions(room_type)
             self.dimensions[room_id] = (width, height)
             
-            # Get Vastu target with random offset
+            # Get Vastu target with larger random offset to prevent same-type clustering
             vastu_target = self._get_vastu_target_position(room_type)
-            offset = np.random.uniform(-2, 2, 2)  # Small random offset
+            # Spread rooms more: offset proportional to plot size
+            spread_factor = min(self.plot_width, self.plot_length) * 0.15
+            offset = np.random.uniform(-spread_factor, spread_factor, 2)
             
             # Initialize position (ensure within bounds)
             pos = vastu_target + offset

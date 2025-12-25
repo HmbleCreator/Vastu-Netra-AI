@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Excluded files
+MeetMuxAssessment.txt
+SupportinngPapers/
+llm-test.html
+model-test.html
+test-api.html
+webgpu-test.html
