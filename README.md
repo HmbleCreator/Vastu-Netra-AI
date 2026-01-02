@@ -2,7 +2,7 @@
 
 **Vastu Netra AI** is an intelligent, Vastu-compliant floor plan generator that combines modern architectural constraints with ancient Indian design principles (Vastu Shastra). It features an interactive conversational interface that allows users to generate, visualize, and modify floor plans in real-time.
 
-![Vastu Netra AI Banner](public/og-image.png)
+<img width="2879" height="1567" alt="Screenshot 2025-12-25 151615" src="https://github.com/user-attachments/assets/70e43ba0-c769-4b51-a12a-8bf12f9237e7" />
 
 ## Key Features
 
