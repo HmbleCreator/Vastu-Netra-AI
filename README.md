@@ -138,4 +138,4 @@ ollama serve
 ---
 
 ## License
-MIT License. Built with love for Vastu Shastra & AI.
+APACHE 2.0 License. Built with love for Vastu Shastra & AI.
